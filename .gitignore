@@ -46,7 +46,7 @@ ocr_logs/
 
 # Excel отчеты и результаты
 *.xlsx
-!db_privilage.xlsx
+db_privilage.xlsx
 clients_database.xlsx
 clients_normalized.xlsx
 clients_not_found.xlsx
