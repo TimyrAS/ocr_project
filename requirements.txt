@@ -1,0 +1,12 @@
+# Зависимости для скрипта оцифровки карточек клиентов
+# Установка: pip3 install -r requirements.txt
+
+pandas>=2.0.0
+google-cloud-vision>=3.5.0
+anthropic>=0.39.0
+openpyxl>=3.1.0
+Pillow>=10.0.0
+tqdm>=4.65.0
+rapidfuzz>=3.0.0
+google-api-python-client>=2.151.0
+certifi>=2023.0.0

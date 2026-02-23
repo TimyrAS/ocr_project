@@ -1,0 +1,78 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Секреты и ключи
+*.json
+!config.py
+micro-weaver-*.json
+*credentials*.json
+*key*.json
+
+# Кэш и логи
+ocr_cache/
+ocr_logs/
+*.log
+
+# Временные файлы
+*.tmp
+*.temp
+*.bak
+*.backup
+
+# Excel отчеты и результаты
+*.xlsx
+!db_privilage.xlsx
+clients_database.xlsx
+clients_normalized.xlsx
+clients_not_found.xlsx
+verification_report.xlsx
+verification_report_backup.xlsx
+final_verification_report.xlsx
+pipeline_report.xlsx
+test_*.xlsx
+preview_*.html
+
+# JSON данные
+raw_results.json
+processed_registry.json
+
+# Рабочие файлы
+JPG/
+*.jpg
+*.jpeg
+*.png
+*.heic
+*.webp
+
+# Документация (не коммитим временные заметки)
+IMPROVEMENTS.md
+README_CHANGES.md
+ИНСТРУКЦИЯ.md
+
+# Тестовые файлы
+audit-report.jsx
