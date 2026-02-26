@@ -1392,17 +1392,10 @@ def collect_ocr_texts(pages: list) -> dict:
         all_texts.extend(text_list)
     result["full"] = truncate_text("\n\n---\n\n".join(all_texts) if all_texts else "")
 
-    # Если все целевые категории пусты, но full есть — дублируем в procedures как минимум,
-    # чтобы колонка процедур не оставалась пустой.
+    # Если все целевые категории пусты, но full есть — дублируем в procedures как fallback,
+    # чтобы колонка процедур не оставалась пустой (unknown-страницы попадают сюда).
     if all(not texts[key] for key in ["front", "inner", "procedures", "products", "complex", "botox"]) and result["full"]:
         result["procedures"] = result["full"]
-
-    # Дополнительный дубль: если конкретная колонка пуста, но есть full — заполняем её full,
-    # чтобы в Excel не оставались пустые OCR-колонки.
-    if result["full"]:
-        for key in ["front", "inner", "procedures", "products", "complex", "botox"]:
-            if not result.get(key):
-                result[key] = result["full"]
 
     # Собираем реконструированные таблицы
     tables_md_parts = []
