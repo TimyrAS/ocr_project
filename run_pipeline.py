@@ -280,6 +280,53 @@ def run_normalization(log, config, ocr_excel_path):
 
 
 # ============================================================
+# ФЛАГ ФИНАЛЬНОЙ ВЕРИФИКАЦИИ
+# ============================================================
+
+# Значения env var / config, которые отключают финальную верификацию
+_FALSY_VERIF = {"false", "0", "no", "off"}
+_TRUTHY_FLAGS = {"true", "1", "yes", "on"}
+
+
+def _is_smoke_mode() -> bool:
+    """True если SMOKE_MODE задан как truthy (true/1/yes/on)."""
+    return os.environ.get("SMOKE_MODE", "").lower().strip() in _TRUTHY_FLAGS
+
+
+def _gsheets_disabled(cfg) -> bool:
+    """
+    Возвращает True, если выгрузка в Google Sheets отключена.
+
+    Приоритет:
+    1. SMOKE_MODE=true → всегда отключено (тихий пропуск)
+    2. ENV GSHEETS_UPLOAD_ENABLED=falsy → отключено
+    3. config.GSHEETS_UPLOAD_ENABLED=False → отключено
+    """
+    if _is_smoke_mode():
+        return True
+    env_val = os.environ.get("GSHEETS_UPLOAD_ENABLED", "").lower().strip()
+    if env_val:
+        return env_val in _FALSY_VERIF
+    return not bool(getattr(cfg, "GSHEETS_UPLOAD_ENABLED", False))
+
+
+def _final_verification_disabled(cfg) -> bool:
+    """
+    Возвращает True, если финальная верификация Claude отключена.
+
+    Приоритет:
+    1. Переменная окружения ENABLE_FINAL_VERIFICATION (если задана):
+       значения false / 0 / no / off трактуются как «выключено».
+    2. config.ENABLE_FINAL_VERIFICATION (если ENV не задана).
+    """
+    env_val = os.environ.get("ENABLE_FINAL_VERIFICATION", "").lower().strip()
+    if env_val:                             # ENV задана → она приоритетна
+        return env_val in _FALSY_VERIF
+    # ENV не задана → берём из config
+    return not bool(getattr(cfg, "ENABLE_FINAL_VERIFICATION", True))
+
+
+# ============================================================
 # ШАГ 5-6: СВЕРКА С БД
 # (импорт из verify_with_db.py)
 # ============================================================
@@ -349,7 +396,11 @@ def run_verification(log, config, ocr_excel_path):
         log.warning("  Генерация отчёта только из БД.")
 
     # ========== ШАГ 6.5: ФИНАЛЬНАЯ ВЕРИФИКАЦИЯ CLAUDE ==========
-    if len(verification_df) > 0 and ocr_sheets:
+    # Guard: ENV ENABLE_FINAL_VERIFICATION (приоритет) или config.ENABLE_FINAL_VERIFICATION.
+    # Значения false/0/no/off отключают Claude. quality_baseline.py ставит ENV=false.
+    if _final_verification_disabled(config) and len(verification_df) > 0 and ocr_sheets:
+        log.info("\n── ШАГ 6.5: Финальная верификация пропущена (отключено) ──")
+    elif len(verification_df) > 0 and ocr_sheets:
         log.info("\n── ШАГ 6.5: Финальная верификация Claude ──")
 
         try:
@@ -520,7 +571,8 @@ def generate_pipeline_report(log, config, verification_df, ocr_excel_path):
                 )
 
                 # Лист 3: Статистика сверки
-                stats = verification_df["Статус"].value_counts().reset_index()
+                status_col = "Статус_БД" if "Статус_БД" in verification_df.columns else "Статус"
+                stats = verification_df[status_col].value_counts().reset_index()
                 stats.columns = ["Статус", "Количество"]
                 total = len(verification_df)
                 stats["Доля_%"] = (stats["Количество"] / total * 100).round(1)
@@ -710,6 +762,7 @@ def add_verification_sheet(clients_path: str, verification_df: pd.DataFrame, log
         return
 
     from openpyxl import load_workbook
+    from zipfile import BadZipFile
 
     # Колонки для листа сверки (только ключевые, без OCR-текстов)
     keep_cols = [
@@ -722,7 +775,14 @@ def add_verification_sheet(clients_path: str, verification_df: pd.DataFrame, log
     cols = [c for c in keep_cols if c in verification_df.columns]
     vdf = verification_df[cols].copy()
 
-    wb = load_workbook(clients_path)
+    try:
+        wb = load_workbook(clients_path)
+    except BadZipFile:
+        log.warning(f"  ⚠ add_verification_sheet: файл повреждён (BadZipFile): {clients_path}")
+        return
+    except Exception as e:
+        log.warning(f"  ⚠ add_verification_sheet: не удалось открыть файл: {e}")
+        return
 
     # Удаляем старый лист, если есть
     sheet_name = "Сверка_БД"
@@ -791,13 +851,28 @@ def enrich_clients_with_db_match(clients_path: str, verification_df: pd.DataFram
 
     # Читаем только лист 'Клиенты' — остальные не трогаем
     from openpyxl import load_workbook
-    wb = load_workbook(clients_path)
+    from zipfile import BadZipFile
+
+    try:
+        wb = load_workbook(clients_path)
+    except BadZipFile:
+        log.warning(f"  ⚠ enrich_clients: файл повреждён (BadZipFile): {clients_path}")
+        return
+    except Exception as e:
+        log.warning(f"  ⚠ enrich_clients: не удалось открыть файл: {e}")
+        return
+
     if "Клиенты" not in wb.sheetnames:
         log.warning("  ⚠ enrich_clients: лист 'Клиенты' не найден")
         wb.close()
         return
 
-    cdf = pd.read_excel(clients_path, sheet_name="Клиенты")
+    try:
+        cdf = pd.read_excel(clients_path, sheet_name="Клиенты")
+    except Exception as e:
+        log.warning(f"  ⚠ enrich_clients: не удалось прочитать лист Клиенты: {e}")
+        wb.close()
+        return
 
     matched_bd_id = []
     matched_bd_fio = []
@@ -908,20 +983,16 @@ def main():
         else:
             log.info("  Реестр не найден (и так пусто)")
 
-        # Очистка кэша OCR
+        # Очистка кэша OCR (все .json файлы без исключений)
         cache_folder = getattr(cfg, 'CACHE_FOLDER', './ocr_cache')
         if os.path.exists(cache_folder):
             import glob
             cache_files = glob.glob(os.path.join(cache_folder, "*.json"))
-            # Исключаем служебные файлы (если есть)
-            cache_files = [f for f in cache_files if not os.path.basename(f).startswith('_')]
             removed_count = 0
             for cache_file in cache_files:
                 try:
-                    # Не удаляем сам реестр (он уже удалён выше)
-                    if os.path.basename(cache_file) != "processed_registry.json":
-                        os.remove(cache_file)
-                        removed_count += 1
+                    os.remove(cache_file)
+                    removed_count += 1
                 except OSError:
                     pass
             if removed_count > 0:
@@ -936,6 +1007,25 @@ def main():
                 log.info(f"  Excel сброшен: {ocr_excel_path}")
             except OSError:
                 log.warning(f"  Не удалось удалить Excel: {ocr_excel_path}")
+
+        # Удаляем промежуточные отчёты для полной пересборки
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        intermediate_files = [
+            getattr(cfg, 'NORMALIZED_FILE', 'clients_normalized.xlsx'),
+            "verification_report.xlsx",
+            "pipeline_report.xlsx",
+            getattr(cfg, 'NOT_FOUND_CLIENTS_FILE', 'clients_not_found.xlsx'),
+            getattr(cfg, 'FINAL_VERIFICATION_REPORT', 'final_verification_report.xlsx'),
+            "raw_results.json",
+        ]
+        for fname in intermediate_files:
+            fpath = os.path.join(script_dir, fname)
+            if os.path.exists(fpath):
+                try:
+                    os.remove(fpath)
+                    log.info(f"  Удалён: {fname}")
+                except OSError:
+                    log.warning(f"  Не удалось удалить: {fname}")
 
     # ── ШАГ 1-4: OCR ──
     if not args.skip_ocr:
@@ -971,7 +1061,11 @@ def main():
 
     # ── Выгрузка в Google Sheets (если включено) ──
     try:
-        if getattr(cfg, 'GSHEETS_UPLOAD_ENABLED', False):
+        if _gsheets_disabled(cfg):
+            # В smoke-режиме: тихий пропуск (нет лишнего шума в логе)
+            if not _is_smoke_mode():
+                log.warning("  ⚠ Выгрузка в Google Sheets выключена (GSHEETS_UPLOAD_ENABLED=False)")
+        else:
             from importlib import import_module
             try:
                 google_sheets = import_module('google_sheets')
@@ -993,8 +1087,6 @@ def main():
                     log.warning(f"  ⚠ Ошибка выгрузки в Google Sheets: {e}")
             else:
                 log.warning("  ⚠ Google Sheets: не заданы GSHEETS_CREDENTIALS или GSHEETS_SPREADSHEET_ID")
-        else:
-            log.warning("  ⚠ Выгрузка в Google Sheets выключена (GSHEETS_UPLOAD_ENABLED=False)")
     except Exception as e:
         log.warning(f"  ⚠ Ошибка в блоке выгрузки Google Sheets: {e}")
 

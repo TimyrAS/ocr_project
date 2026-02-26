@@ -182,7 +182,11 @@ def build_db_client_index(db_df):
     sorted_names = sorted(index.keys())
     for db_num, name in enumerate(sorted_names, 1):
         index[name]["visits"].sort(
-            key=lambda v: v["date"] if pd.notna(v["date"]) else pd.Timestamp.min
+            key=lambda v: (
+                v["date"].tz_localize(None)
+                if pd.notna(v["date"]) and getattr(v["date"], "tzinfo", None) is not None
+                else (v["date"] if pd.notna(v["date"]) else pd.Timestamp.min)
+            )
         )
         index[name]["total_visits"] = len(index[name]["visits"])
         index[name]["doctors"] = list(index[name]["doctors"])
