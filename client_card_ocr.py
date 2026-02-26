@@ -517,7 +517,8 @@ def infer_page_type_from_content(payload: dict, ocr_text: str, filename: str) ->
         ],
         "products_list": [
             "products", "покупки", "product_name", "товар",
-            "consultant", "консультант", "средств", "косметика"
+            "consultant", "консультант", "средств", "косметика",
+            "наименование", "приобрет", "цена", "items", "домашнего"
         ],
         "complex_package": [
             "complex_name", "комплекс", "package", "пакет",
