@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ── Job 1: весь тест-сьют ────────────────────────────────────────────────
+  test:
+    name: pytest (all tests)
+    runs-on: ubuntu-latest
+
+    env:
+      # Детерминированный режим: внешние API не вызываются
+      ENABLE_FINAL_VERIFICATION: "false"
+      GSHEETS_UPLOAD_ENABLED: "false"
+      SMOKE_MODE: "true"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pytest
+
+      - name: Run tests
+        run: python3 -m pytest tests/ -q --tb=short
+
+  # ── Job 2: quality baseline ──────────────────────────────────────────────
+  quality-baseline:
+    name: quality baseline (schema + smoke)
+    runs-on: ubuntu-latest
+    needs: test   # запускается только после успешного test
+
+    env:
+      ENABLE_FINAL_VERIFICATION: "false"
+      GSHEETS_UPLOAD_ENABLED: "false"
+      SMOKE_MODE: "true"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pytest
+
+      - name: Baseline schema tests
+        run: python3 -m pytest tests/test_quality_baseline_schema.py -q --tb=short
+
+      - name: Quality baseline — smoke + flaky detection
+        run: >-
+          python3 quality_baseline.py
+          --repeat 1
+          --pytest-cmd "python3 -m pytest tests/ -q"
+          --output-dir artifacts/quality
+
+      - name: Verify artifacts/ not tracked by git
+        run: |
+          if git ls-files artifacts/ | grep -q .; then
+            echo "ERROR: artifacts/ содержит файлы, отслеживаемые git"
+            git ls-files artifacts/
+            exit 1
+          fi
+          echo "OK: artifacts/ не отслеживается git"
+
+      - name: Upload baseline artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: quality-baseline
+          path: artifacts/quality/
+          retention-days: 30
