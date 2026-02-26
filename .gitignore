@@ -38,6 +38,9 @@ ocr_cache/
 ocr_logs/
 *.log
 
+# Генерируемые артефакты baseline (создаются quality_baseline.py)
+artifacts/
+
 # Временные файлы
 *.tmp
 *.temp

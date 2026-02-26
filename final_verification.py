@@ -21,6 +21,8 @@ import pandas as pd
 import json
 from typing import Dict, List, Tuple, Optional
 from datetime import datetime
+from pathlib import Path
+
 import anthropic
 
 log = logging.getLogger('pipeline')
@@ -150,7 +152,8 @@ def run_final_claude_verification(
 
     # Генерируем отчёт
     report_path = getattr(config, 'FINAL_VERIFICATION_REPORT', 'final_verification_report.xlsx')
-    report_path = f"/Users/admin/Desktop/Cosmo/Карточка клиента/ocr_project/{report_path}"
+    report_path = str((Path(getattr(config, "BASE_DIR", Path.cwd())) / report_path) if not Path(report_path).is_absolute() else Path(report_path))
+
 
     generate_final_verification_report(enhanced_df, report_path, log)
 
@@ -588,7 +591,7 @@ def generate_final_verification_report(
                 # Выбираем ключевые колонки
                 review_cols = [
                     'ID', 'OCR_ФИО', 'OCR_Телефон',
-                    'БД_ФИО', 'БД_Телефон', 'Статус',
+                    'БД_ID', 'БД_ФИО', 'БД_Телефон', 'Статус_БД',
                     'Claude_Статус', 'Claude_Совпадение_%',
                     'Расхождения', 'Рекомендации'
                 ]
@@ -606,7 +609,7 @@ def generate_final_verification_report(
                 possible_dupes.insert(0, 'ID', possible_dupes.index)
                 dupe_cols = [
                     'ID', 'OCR_ФИО', 'OCR_Телефон',
-                    'БД_ФИО', 'БД_Телефон',
+                    'БД_ID', 'БД_ФИО', 'БД_Телефон',
                     'Claude_Совпадение_%', 'Рекомендации'
                 ]
                 dupe_cols = [col for col in dupe_cols if col in possible_dupes.columns]
@@ -617,13 +620,21 @@ def generate_final_verification_report(
                 )
 
             # ====== ЛИСТ 4: НЕ НАЙДЕНЫ (РАСШИРЕННЫЙ) ======
-            not_found = enhanced_df[enhanced_df['Статус'] == 'Не найден'].copy()
+            status_col = 'Статус_БД' if 'Статус_БД' in enhanced_df.columns else 'Статус'
+            try:
+                from config import STATUS_DB_NOT_FOUND
+            except ImportError:
+                STATUS_DB_NOT_FOUND = "Нет в БД (новый для картотеки)"
+            if status_col == 'Статус_БД':
+                not_found = enhanced_df[enhanced_df[status_col] == STATUS_DB_NOT_FOUND].copy()
+            else:
+                not_found = enhanced_df[enhanced_df[status_col] == 'Не найден'].copy()
             if not not_found.empty:
                 # Добавляем ID как индекс
                 not_found.insert(0, 'ID', not_found.index)
                 not_found_cols = [
                     'ID', 'OCR_ФИО', 'OCR_Телефон',
-                    'Claude_Статус', 'Возможные_совпадения_БД', 'Рекомендации'
+                    'БД_ID', 'Claude_Статус', 'Возможные_совпадения_БД', 'Рекомендации'
                 ]
                 not_found_cols = [col for col in not_found_cols if col in not_found.columns]
                 not_found[not_found_cols].to_excel(writer, sheet_name='Не_найдены_расширенный', index=False)
@@ -638,7 +649,7 @@ def generate_final_verification_report(
                 # Добавляем ID как индекс
                 with_corrections.insert(0, 'ID', with_corrections.index)
                 corr_cols = [
-                    'ID', 'OCR_ФИО', 'OCR_Телефон',
+                    'ID', 'OCR_ФИО', 'OCR_Телефон', 'БД_ID',
                     'Исправления_OCR', 'Рекомендации'
                 ]
                 corr_cols = [col for col in corr_cols if col in with_corrections.columns]
@@ -654,7 +665,7 @@ def generate_final_verification_report(
                 # Добавляем ID как индекс
                 with_recommendations.insert(0, 'ID', with_recommendations.index)
                 rec_cols = [
-                    'ID', 'OCR_ФИО', 'Статус',
+                    'ID', 'OCR_ФИО', 'БД_ID', 'Статус_БД',
                     'Claude_Статус', 'Рекомендации'
                 ]
                 rec_cols = [col for col in rec_cols if col in with_recommendations.columns]
