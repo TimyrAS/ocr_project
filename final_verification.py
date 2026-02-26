@@ -420,6 +420,9 @@ def parse_claude_batch_response(
             results = parsed['results']
         elif 'check_results' in parsed:
             results = parsed['check_results']
+        elif 'client_id' in parsed:
+            # Claude вернул один объект напрямую (батч из 1 клиента) — оборачиваем в список
+            results = [parsed]
         else:
             log.warning(f"  Ответ Claude не содержит поле 'clients', 'results' или 'check_results'")
             log.warning(f"  Ключи в ответе: {list(parsed.keys())}")
