@@ -2,10 +2,19 @@
 Конфигурация для скрипта оцифровки карточек клиентов.
 Заполните свои ключи и пути перед запуском.
 """
+import os
 from pathlib import Path
 
 # Абсолютный путь к папке проекта (работает после переноса каталога)
 BASE_DIR = Path(__file__).resolve().parent
+
+# ============================================================
+# СТРУКТУРА ДИРЕКТОРИЙ
+# ============================================================
+DATA_DIR = BASE_DIR / "data"
+INPUT_DIR = BASE_DIR / "input"
+CACHE_DIR = BASE_DIR / "ocr_cache"
+SCRIPTS_DIR = BASE_DIR / "scripts"
 
 
 # ============================================================
@@ -14,18 +23,19 @@ BASE_DIR = Path(__file__).resolve().parent
 GOOGLE_VISION_CREDENTIALS = str(BASE_DIR / "micro-weaver-486910-g5-d70b970e607a.json")
 
 # ============================================================
-# ANTHROPIC (CLAUDE) API через vibeproxy
+# ANTHROPIC (CLAUDE) API
 # ============================================================
-ANTHROPIC_API_KEY = "sk-ant-placeholder"
-ANTHROPIC_BASE_URL = "http://localhost:8317"
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "sk-ant-placeholder")
+ANTHROPIC_BASE_URL = None
 CLAUDE_MODEL = "claude-sonnet-4-20250514"
 
 # ============================================================
 # ПУТИ К ФАЙЛАМ
 # ============================================================
-INPUT_FOLDER = str(BASE_DIR / "JPG")
+INPUT_FOLDER = str(INPUT_DIR)
 OUTPUT_FILE = str(BASE_DIR / "clients_database.xlsx")
-CACHE_FOLDER = str(BASE_DIR / "ocr_cache")
+PRICE_LIST_PATH = str(DATA_DIR / "price.xlsx")
+CACHE_FOLDER = str(CACHE_DIR)
 
 # ============================================================
 # НАСТРОЙКИ ОБРАБОТКИ
@@ -75,6 +85,13 @@ OCR_SAVE_BBOX_DEBUG = False
 OCR_DEBUG_FOLDER = str(BASE_DIR / "ocr_debug")
 
 # ============================================================
+# СПРАВОЧНИК КЛИЕНТОВ
+# ============================================================
+# Файл БД_Клиенты.xlsx — дополнительный справочник клиентов.
+# При отсутствии — пайплайн работает без него (только warning).
+DB_CLIENTS_FILE = str(DATA_DIR / "БД_Клиенты.xlsx")
+
+# ============================================================
 # ИЗВЕСТНЫЕ ВРАЧИ/КОНСУЛЬТАНТЫ КЛИНИКИ
 # ============================================================
 # Скрипт использует этот список для коррекции OCR-ошибок
@@ -109,7 +126,7 @@ DB_DOCTOR_MAP = {
 # БАЗА ДАННЫХ «ПРИВИЛЕГИЯ» (для сверки)
 # ============================================================
 # Выгрузка из CRM клиники — эталон для проверки оцифрованных карточек
-DB_PRIVILAGE_PATH = str(BASE_DIR / "db_privilage.xlsx")
+DB_PRIVILAGE_PATH = str(DATA_DIR / "db_privilage.xlsx")
 
 # Столбцы БД (для парсинга)
 DB_COLUMNS = {
@@ -284,7 +301,7 @@ PHONE_ALIASES = ["телефон", "phone", "контакты", "contacts", "т�
 # При повторном запуске уже обработанные файлы пропускаются.
 # Хранит: имя файла, MD5-хэш, дата обработки, тип страницы, ФИО клиента.
 # Удалите этот файл, чтобы обработать все карточки заново.
-PROCESSED_REGISTRY = str(BASE_DIR / "ocr_cache" / "processed_registry.json")
+PROCESSED_REGISTRY = str(CACHE_DIR / "processed_registry.json")
 
 # ============================================================
 # ФИНАЛЬНАЯ ВЕРИФИКАЦИЯ CLAUDE
@@ -331,3 +348,13 @@ LOG_LEVEL = "DEBUG"
 # Эти флаги влияют только на runtime run_pipeline.py через env;
 # значения ниже НЕ используются напрямую (они служат документацией).
 SMOKE_MODE = False  # переопределяется env var SMOKE_MODE=true
+
+
+# ============================================================
+# ЛЕНИВАЯ ИНИЦИАЛИЗАЦИЯ ДИРЕКТОРИЙ
+# ============================================================
+# Создаём необходимые каталоги при импорте config
+import os as _os
+for _d in (DATA_DIR, INPUT_DIR, CACHE_DIR):
+    _os.makedirs(_d, exist_ok=True)
+del _os, _d
