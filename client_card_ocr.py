@@ -1489,19 +1489,78 @@ def _build_client_row(key, cd, cid):
     ]
 
 
-def _append_new_clients(grouped_clients: dict, output_path: str) -> int:
+def _append_new_clients(grouped_clients: dict, output_path: str,
+                        price_index=None) -> dict:
     """
     Дозаписывает ТОЛЬКО новых клиентов в существующий Excel.
     Существующие строки (с ручными правками) остаются нетронутыми.
     Новые клиенты определяются по файлам-источникам.
 
-    Returns: количество добавленных клиентов (0 = нечего добавлять).
+    Returns: price_stats dict (loaded, Процедуры, Покупки, Комплексы).
     Raises: Exception если дозапись невозможна (файл повреждён и т.п.)
     """
     import re
     from openpyxl import load_workbook
 
     wb = load_workbook(output_path)
+
+    # --- Настройка прайс-сверки ---
+    _use_price = price_index is not None and price_index.is_loaded
+
+    def _empty_stats():
+        return {"found": 0, "filled": 0, "mismatched": 0, "ambiguous": 0}
+
+    price_stats = {
+        "loaded": _use_price,
+        "Процедуры": _empty_stats(),
+        "Покупки": _empty_stats(),
+        "Комплексы": _empty_stats(),
+    }
+
+    def _ensure_price_header(ws, col_names):
+        """Добавляет недостающие колонки прайса в заголовок (строка 1).
+        Возвращает {col_name: 1-based column index}."""
+        existing = {}
+        last_col = 0
+        for c in range(1, ws.max_column + 1):
+            v = ws.cell(row=1, column=c).value
+            if v is not None:
+                existing[str(v)] = c
+                last_col = c
+        result = {}
+        for name in col_names:
+            if name in existing:
+                result[name] = existing[name]
+            else:
+                last_col += 1
+                ws.cell(row=1, column=last_col, value=name)
+                existing[name] = last_col
+                result[name] = last_col
+        return result
+
+    def _price_match(lookup_name, raw_cost, sheet_name):
+        """Returns (final_cost, price_col, delta_col, match_col)."""
+        p_price, _score, p_amb = price_index.match(lookup_name or "")
+        ocr_val = _to_number_or_none(raw_cost)
+        if ocr_val is None and p_price is not None and not p_amb:
+            final_cost = p_price
+            price_stats[sheet_name]["filled"] += 1
+        else:
+            final_cost = ocr_val
+        if p_price is not None and not p_amb:
+            price_stats[sheet_name]["found"] += 1
+            delta = (final_cost - p_price) if final_cost is not None else None
+            matches = (
+                delta is not None and abs(delta) <= max(0.01 * p_price, 100)
+            )
+            if not matches and delta is not None:
+                price_stats[sheet_name]["mismatched"] += 1
+            return final_cost, p_price, delta, matches
+        elif p_amb:
+            price_stats[sheet_name]["ambiguous"] += 1
+            return final_cost, None, None, None
+        else:
+            return final_cost, None, None, None
 
     if "Клиенты" not in wb.sheetnames:
         wb.close()
@@ -1552,7 +1611,7 @@ def _append_new_clients(grouped_clients: dict, output_path: str) -> int:
     if not new_clients:
         wb.close()
         log.info(f"\n  Нет новых клиентов — файл сохранён без изменений.")
-        return 0
+        return price_stats
 
     # --- Назначаем ID новым клиентам ---
     client_id_map = {}
@@ -1630,6 +1689,13 @@ def _append_new_clients(grouped_clients: dict, output_path: str) -> int:
     h_proc = ["ID", "ФИО", "Дата", "Процедура", "Описание", "Стоимость"]
     ws_proc = _ensure_sheet(wb, "Процедуры", h_proc)
     r_proc = ws_proc.max_row + 1
+    _pcols_proc = (
+        _ensure_price_header(
+            ws_proc,
+            ["Стоимость_прайс", "Стоимость_дельта", "Стоимость_совпадает"],
+        )
+        if _use_price else {}
+    )
 
     for key in sorted(new_clients.keys()):
         cd = new_clients[key]
@@ -1640,22 +1706,48 @@ def _append_new_clients(grouped_clients: dict, output_path: str) -> int:
                 if isinstance(procs, list):
                     for p in procs:
                         if isinstance(p, dict):
+                            pname_a = safe_val(p, "procedure_name")
+                            raw_cost_a = safe_val(p, "cost")
+                            if _use_price:
+                                row_cost_a, pc_a, dc_a, mc_a = _price_match(
+                                    pname_a, raw_cost_a, "Процедуры"
+                                )
+                            else:
+                                row_cost_a, pc_a, dc_a, mc_a = (
+                                    raw_cost_a, None, None, None
+                                )
                             row_data = [
                                 cid, cd["name"],
                                 safe_val(p, "date"),
-                                safe_val(p, "procedure_name"),
+                                pname_a,
                                 safe_val(p, "description"),
-                                safe_val(p, "cost")
+                                row_cost_a,
                             ]
                             for col_idx, val in enumerate(row_data, 1):
                                 ws_proc.cell(row=r_proc, column=col_idx, value=val)
                                 style_data_cell(ws_proc.cell(row=r_proc, column=col_idx))
+                            if _use_price:
+                                for _cn, _cv in [
+                                    ("Стоимость_прайс", pc_a),
+                                    ("Стоимость_дельта", dc_a),
+                                    ("Стоимость_совпадает", mc_a),
+                                ]:
+                                    _ci = _pcols_proc[_cn]
+                                    ws_proc.cell(row=r_proc, column=_ci, value=_cv)
+                                    style_data_cell(ws_proc.cell(row=r_proc, column=_ci))
                             r_proc += 1
 
     # Покупки
     h_purch = ["ID", "ФИО", "Дата", "Консультант", "Наименование", "Цена"]
     ws_purch = _ensure_sheet(wb, "Покупки", h_purch)
     r_purch = ws_purch.max_row + 1
+    _pcols_purch = (
+        _ensure_price_header(
+            ws_purch,
+            ["Цена_прайс", "Цена_дельта", "Цена_совпадает"],
+        )
+        if _use_price else {}
+    )
 
     for key in sorted(new_clients.keys()):
         cd = new_clients[key]
@@ -1666,16 +1758,35 @@ def _append_new_clients(grouped_clients: dict, output_path: str) -> int:
                 if isinstance(prods, list):
                     for p in prods:
                         if isinstance(p, dict):
+                            pname4_a = safe_val(p, "product_name")
+                            raw_price4_a = safe_val(p, "price")
+                            if _use_price:
+                                row_p4_a, pc4_a, dc4_a, mc4_a = _price_match(
+                                    pname4_a, raw_price4_a, "Покупки"
+                                )
+                            else:
+                                row_p4_a, pc4_a, dc4_a, mc4_a = (
+                                    raw_price4_a, None, None, None
+                                )
                             row_data = [
                                 cid, cd["name"],
                                 safe_val(p, "date"),
                                 safe_val(p, "consultant"),
-                                safe_val(p, "product_name"),
-                                safe_val(p, "price")
+                                pname4_a,
+                                row_p4_a,
                             ]
                             for col_idx, val in enumerate(row_data, 1):
                                 ws_purch.cell(row=r_purch, column=col_idx, value=val)
                                 style_data_cell(ws_purch.cell(row=r_purch, column=col_idx))
+                            if _use_price:
+                                for _cn, _cv in [
+                                    ("Цена_прайс", pc4_a),
+                                    ("Цена_дельта", dc4_a),
+                                    ("Цена_совпадает", mc4_a),
+                                ]:
+                                    _ci = _pcols_purch[_cn]
+                                    ws_purch.cell(row=r_purch, column=_ci, value=_cv)
+                                    style_data_cell(ws_purch.cell(row=r_purch, column=_ci))
                             r_purch += 1
 
     # Комплексы
@@ -1686,6 +1797,13 @@ def _append_new_clients(grouped_clients: dict, output_path: str) -> int:
     ]
     ws_comp = _ensure_sheet(wb, "Комплексы", h_comp)
     r_comp = ws_comp.max_row + 1
+    _pcols_comp = (
+        _ensure_price_header(
+            ws_comp,
+            ["Стоимость_прайс", "Стоимость_дельта", "Стоимость_совпадает"],
+        )
+        if _use_price else {}
+    )
 
     for key in sorted(new_clients.keys()):
         cd = new_clients[key]
@@ -1694,10 +1812,20 @@ def _append_new_clients(grouped_clients: dict, output_path: str) -> int:
             if page.get("page_type") == "complex_package":
                 d = page.get("data", {})
                 procs = d.get("procedures", [])
+                cname5_a = safe_val(d, "complex_name")
+                raw_cost5_a = safe_val(d, "complex_cost")
+                if _use_price:
+                    row_cost5_a, pc5_a, dc5_a, mc5_a = _price_match(
+                        cname5_a, raw_cost5_a, "Комплексы"
+                    )
+                    price_extra5_a = [(pc5_a, dc5_a, mc5_a)]
+                else:
+                    row_cost5_a = raw_cost5_a
+                    price_extra5_a = []
                 base = [
                     cid, safe_val(d, "patient_name"), safe_val(d, "contacts"),
-                    safe_val(d, "doctor"), safe_val(d, "complex_name"),
-                    safe_val(d, "purchase_date"), safe_val(d, "complex_cost")
+                    safe_val(d, "doctor"), cname5_a,
+                    safe_val(d, "purchase_date"), row_cost5_a
                 ]
                 if isinstance(procs, list) and procs:
                     for p in procs:
@@ -1710,12 +1838,30 @@ def _append_new_clients(grouped_clients: dict, output_path: str) -> int:
                             for col_idx, val in enumerate(row_data, 1):
                                 ws_comp.cell(row=r_comp, column=col_idx, value=val)
                                 style_data_cell(ws_comp.cell(row=r_comp, column=col_idx))
+                            if _use_price:
+                                for _cn, _cv in [
+                                    ("Стоимость_прайс", pc5_a),
+                                    ("Стоимость_дельта", dc5_a),
+                                    ("Стоимость_совпадает", mc5_a),
+                                ]:
+                                    _ci = _pcols_comp[_cn]
+                                    ws_comp.cell(row=r_comp, column=_ci, value=_cv)
+                                    style_data_cell(ws_comp.cell(row=r_comp, column=_ci))
                             r_comp += 1
                 else:
                     row_data = base + ["", "", "", "", ""]
                     for col_idx, val in enumerate(row_data, 1):
                         ws_comp.cell(row=r_comp, column=col_idx, value=val)
                         style_data_cell(ws_comp.cell(row=r_comp, column=col_idx))
+                    if _use_price:
+                        for _cn, _cv in [
+                            ("Стоимость_прайс", pc5_a),
+                            ("Стоимость_дельта", dc5_a),
+                            ("Стоимость_совпадает", mc5_a),
+                        ]:
+                            _ci = _pcols_comp[_cn]
+                            ws_comp.cell(row=r_comp, column=_ci, value=_cv)
+                            style_data_cell(ws_comp.cell(row=r_comp, column=_ci))
                     r_comp += 1
 
     # Ботокс
@@ -1755,11 +1901,31 @@ def _append_new_clients(grouped_clients: dict, output_path: str) -> int:
     wb.close()
 
     log.info(f"\n  ✓ Дозаписано {len(new_clients)} новых клиентов в {output_path}")
-    return len(new_clients)
+    if _use_price:
+        for _sn in ("Процедуры", "Покупки", "Комплексы"):
+            _s = price_stats[_sn]
+            log.info(
+                f"price matches [append/{_sn}]: found={_s['found']}, "
+                f"filled={_s['filled']}, mismatched={_s['mismatched']}, "
+                f"ambiguous={_s['ambiguous']}"
+            )
+    return price_stats
 
 
-def write_to_excel(grouped_clients: dict, all_results: list):
+def _to_number_or_none(value) -> 'int | None':
+    """Парсит OCR-значение цены (None/int/float/str) → int или None."""
+    from price_loader import _parse_price
+    return _parse_price(value)
+
+
+def write_to_excel(grouped_clients: dict, all_results: list,
+                   price_index=None) -> dict:
     from openpyxl import Workbook
+
+    def _empty_stats():
+        return {"found": 0, "filled": 0, "mismatched": 0, "ambiguous": 0}
+
+    _use_price = price_index is not None and price_index.is_loaded
 
     output_path = config.OUTPUT_FILE
     os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
@@ -1767,13 +1933,45 @@ def write_to_excel(grouped_clients: dict, all_results: list):
     # === РЕЖИМ ДОЗАПИСИ (если файл уже существует) ===
     if os.path.exists(output_path):
         try:
-            _append_new_clients(grouped_clients, output_path)
-            return
+            return _append_new_clients(grouped_clients, output_path,
+                                       price_index=price_index)
         except Exception as e:
             log.warning(f"  ⚠ Дозапись не удалась ({e}), пересоздаю файл...")
 
     # === СОЗДАНИЕ С НУЛЯ ===
     wb = Workbook()
+
+    # --- Прайс-сверка: инициализация ---
+    price_stats = {
+        "loaded": _use_price,
+        "Процедуры": _empty_stats(),
+        "Покупки": _empty_stats(),
+        "Комплексы": _empty_stats(),
+    }
+
+    def _calc_price(lookup_name, raw_cost, sheet_name):
+        """Returns (final_cost, price_col, delta_col, match_col)."""
+        p_price, _score, p_amb = price_index.match(lookup_name or "")
+        ocr_val = _to_number_or_none(raw_cost)
+        if ocr_val is None and p_price is not None and not p_amb:
+            final_cost = p_price
+            price_stats[sheet_name]["filled"] += 1
+        else:
+            final_cost = ocr_val
+        if p_price is not None and not p_amb:
+            price_stats[sheet_name]["found"] += 1
+            delta = (final_cost - p_price) if final_cost is not None else None
+            matches = (
+                delta is not None and abs(delta) <= max(0.01 * p_price, 100)
+            )
+            if not matches and delta is not None:
+                price_stats[sheet_name]["mismatched"] += 1
+            return final_cost, p_price, delta, matches
+        elif p_amb:
+            price_stats[sheet_name]["ambiguous"] += 1
+            return final_cost, None, None, None
+        else:
+            return final_cost, None, None, None
 
     # === ЛИСТ 1: КЛИЕНТЫ ===
     ws = wb.active
@@ -1933,6 +2131,8 @@ def write_to_excel(grouped_clients: dict, all_results: list):
     # === ЛИСТ 3: ПРОЦЕДУРЫ ===
     ws3 = wb.create_sheet("Процедуры")
     h3 = ["ID", "ФИО", "Дата", "Процедура", "Описание", "Стоимость"]
+    if _use_price:
+        h3 += ["Стоимость_прайс", "Стоимость_дельта", "Стоимость_совпадает"]
     ws3.append(h3)
     style_header(ws3, 1, len(h3))
     r3 = 2
@@ -1945,23 +2145,42 @@ def write_to_excel(grouped_clients: dict, all_results: list):
                 if isinstance(procs, list):
                     for p in procs:
                         if isinstance(p, dict):
+                            pname = safe_val(p, "procedure_name")
+                            raw_cost = safe_val(p, "cost")
+                            if _use_price:
+                                row_cost, pc, dc, mc = _calc_price(
+                                    pname, raw_cost, "Процедуры"
+                                )
+                                price_extra = [pc, dc, mc]
+                            else:
+                                row_cost = raw_cost
+                                price_extra = []
                             ws3.append([
                                 cid, cd["name"],
                                 safe_val(p, "date"),
-                                safe_val(p, "procedure_name"),
+                                pname,
                                 safe_val(p, "description"),
-                                safe_val(p, "cost")
-                            ])
+                                row_cost,
+                            ] + price_extra)
                             for col in range(1, len(h3) + 1):
                                 style_data_cell(ws3.cell(row=r3, column=col))
                             r3 += 1
 
     auto_width(ws3)
     ws3.auto_filter.ref = ws3.dimensions
+    if _use_price:
+        s3 = price_stats["Процедуры"]
+        log.info(
+            f"price matches [Процедуры]: found={s3['found']}, "
+            f"filled={s3['filled']}, mismatched={s3['mismatched']}, "
+            f"ambiguous={s3['ambiguous']}"
+        )
 
     # === ЛИСТ 4: ПОКУПКИ ===
     ws4 = wb.create_sheet("Покупки")
     h4 = ["ID", "ФИО", "Дата", "Консультант", "Наименование", "Цена"]
+    if _use_price:
+        h4 += ["Цена_прайс", "Цена_дельта", "Цена_совпадает"]
     ws4.append(h4)
     style_header(ws4, 1, len(h4))
     r4 = 2
@@ -1974,19 +2193,36 @@ def write_to_excel(grouped_clients: dict, all_results: list):
                 if isinstance(prods, list):
                     for p in prods:
                         if isinstance(p, dict):
+                            pname4 = safe_val(p, "product_name")
+                            raw_price4 = safe_val(p, "price")
+                            if _use_price:
+                                row_price4, pc4, dc4, mc4 = _calc_price(
+                                    pname4, raw_price4, "Покупки"
+                                )
+                                price_extra4 = [pc4, dc4, mc4]
+                            else:
+                                row_price4 = raw_price4
+                                price_extra4 = []
                             ws4.append([
                                 cid, cd["name"],
                                 safe_val(p, "date"),
                                 safe_val(p, "consultant"),
-                                safe_val(p, "product_name"),
-                                safe_val(p, "price")
-                            ])
+                                pname4,
+                                row_price4,
+                            ] + price_extra4)
                             for col in range(1, len(h4) + 1):
                                 style_data_cell(ws4.cell(row=r4, column=col))
                             r4 += 1
 
     auto_width(ws4)
     ws4.auto_filter.ref = ws4.dimensions
+    if _use_price:
+        s4 = price_stats["Покупки"]
+        log.info(
+            f"price matches [Покупки]: found={s4['found']}, "
+            f"filled={s4['filled']}, mismatched={s4['mismatched']}, "
+            f"ambiguous={s4['ambiguous']}"
+        )
 
     # === ЛИСТ 5: КОМПЛЕКСЫ ===
     ws5 = wb.create_sheet("Комплексы")
@@ -1995,6 +2231,8 @@ def write_to_excel(grouped_clients: dict, all_results: list):
         "Дата покупки", "Стоимость", "№", "Процедура",
         "Дата", "Кол-во", "Комментарий"
     ]
+    if _use_price:
+        h5 += ["Стоимость_прайс", "Стоимость_дельта", "Стоимость_совпадает"]
     ws5.append(h5)
     style_header(ws5, 1, len(h5))
     r5 = 2
@@ -2005,10 +2243,20 @@ def write_to_excel(grouped_clients: dict, all_results: list):
             if page.get("page_type") == "complex_package":
                 d = page.get("data", {})
                 procs = d.get("procedures", [])
+                cname5 = safe_val(d, "complex_name")
+                raw_cost5 = safe_val(d, "complex_cost")
+                if _use_price:
+                    row_cost5, pc5, dc5, mc5 = _calc_price(
+                        cname5, raw_cost5, "Комплексы"
+                    )
+                    price_extra5 = [pc5, dc5, mc5]
+                else:
+                    row_cost5 = raw_cost5
+                    price_extra5 = []
                 base = [
                     cid, safe_val(d, "patient_name"), safe_val(d, "contacts"),
-                    safe_val(d, "doctor"), safe_val(d, "complex_name"),
-                    safe_val(d, "purchase_date"), safe_val(d, "complex_cost")
+                    safe_val(d, "doctor"), cname5,
+                    safe_val(d, "purchase_date"), row_cost5
                 ]
                 if isinstance(procs, list) and procs:
                     for p in procs:
@@ -2017,18 +2265,25 @@ def write_to_excel(grouped_clients: dict, all_results: list):
                                 safe_val(p, "number"), safe_val(p, "procedure"),
                                 safe_val(p, "date"), safe_val(p, "quantity"),
                                 safe_val(p, "comment")
-                            ])
+                            ] + price_extra5)
                             for col in range(1, len(h5) + 1):
                                 style_data_cell(ws5.cell(row=r5, column=col))
                             r5 += 1
                 else:
-                    ws5.append(base + ["", "", "", "", ""])
+                    ws5.append(base + ["", "", "", "", ""] + price_extra5)
                     for col in range(1, len(h5) + 1):
                         style_data_cell(ws5.cell(row=r5, column=col))
                     r5 += 1
 
     auto_width(ws5)
     ws5.auto_filter.ref = ws5.dimensions
+    if _use_price:
+        s5 = price_stats["Комплексы"]
+        log.info(
+            f"price matches [Комплексы]: found={s5['found']}, "
+            f"filled={s5['filled']}, mismatched={s5['mismatched']}, "
+            f"ambiguous={s5['ambiguous']}"
+        )
 
     # === ЛИСТ 6: БОТОКС ===
     ws6 = wb.create_sheet("Ботокс")
@@ -2077,6 +2332,8 @@ def write_to_excel(grouped_clients: dict, all_results: list):
     log.info(f"  Покупок: {ws4.max_row - 1}")
     log.info(f"  Комплексов: {ws5.max_row - 1}")
     log.info(f"  Записей ботокса: {ws6.max_row - 1}")
+
+    return price_stats
 
 
 # ============================================================

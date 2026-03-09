@@ -12,7 +12,7 @@ BASE_DIR = Path(__file__).resolve().parent
 # СТРУКТУРА ДИРЕКТОРИЙ
 # ============================================================
 DATA_DIR = BASE_DIR / "data"
-INPUT_DIR = BASE_DIR / "input"
+INPUT_DIR = BASE_DIR / "Photo"
 CACHE_DIR = BASE_DIR / "ocr_cache"
 SCRIPTS_DIR = BASE_DIR / "scripts"
 

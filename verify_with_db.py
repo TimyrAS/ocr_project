@@ -509,16 +509,16 @@ def main():
     print("СВЕРКА ОЦИФРОВАННЫХ ДАННЫХ С БД «ПРИВИЛЕГИЯ»")
     print("=" * 60)
 
-    # Определяем пути (работаем относительно скрипта)
+    # Определяем пути
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    db_path = os.path.join(script_dir, "db_privilage.xlsx")
+    db_path = DB_PRIVILAGE_PATH
     ocr_path = OUTPUT_FILE
     report_path = os.path.join(script_dir, "verification_report.xlsx")
 
     # Проверяем наличие файлов
     if not os.path.exists(db_path):
         print(f"ОШИБКА: БД не найдена: {db_path}")
-        print("Скопируйте db_privilage.xlsx в папку ocr_project/")
+        print("Скопируйте db_privilage.xlsx в папку data/")
         sys.exit(1)
 
     # Загрузка БД

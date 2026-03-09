@@ -227,11 +227,17 @@ def run_ocr_pipeline(log, config):
     # --- ШАГ 4: Дедупликация + Excel ---
     log.info("\n── ШАГ 4: Дедупликация + запись Excel ──")
     grouped = deduplicate_pages(grouped)
-    write_to_excel(grouped, results)
+    try:
+        from price_loader import PriceIndex
+        price_index = PriceIndex()
+        price_index.load(getattr(config, "PRICE_LIST_PATH", ""))
+    except ImportError:
+        price_index = None
+    price_stats = write_to_excel(grouped, results, price_index=price_index)
 
     log.info(f"\n  ✓ Excel сохранён: {config.OUTPUT_FILE}")
 
-    return config.OUTPUT_FILE
+    return config.OUTPUT_FILE, price_stats
 
 
 # ============================================================
@@ -356,13 +362,14 @@ def run_verification(log, config, ocr_excel_path):
 
     # Определяем пути
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    db_path = os.path.join(script_dir, "db_privilage.xlsx")
+    db_path = getattr(config, 'DB_PRIVILAGE_PATH',
+                      os.path.join(script_dir, "db_privilage.xlsx"))
     report_path = os.path.join(script_dir, "verification_report.xlsx")
 
     # Проверяем наличие БД
     if not os.path.exists(db_path):
         log.warning(f"  БД не найдена: {db_path}")
-        log.warning("  Скопируйте db_privilage.xlsx в папку ocr_project/")
+        log.warning("  Скопируйте db_privilage.xlsx в папку data/")
         log.warning("  Сверка пропущена.")
         return None, None
 
@@ -528,7 +535,8 @@ def run_verification(log, config, ocr_excel_path):
 # ИТОГОВЫЙ КОМБИНИРОВАННЫЙ ОТЧЁТ
 # ============================================================
 
-def generate_pipeline_report(log, config, verification_df, ocr_excel_path):
+def generate_pipeline_report(log, config, verification_df, ocr_excel_path,
+                             price_stats=None):
     """
     Генерирует итоговый комбинированный отчёт pipeline_report.xlsx
     со всеми ключевыми данными в одном файле.
@@ -580,6 +588,26 @@ def generate_pipeline_report(log, config, verification_df, ocr_excel_path):
                     writer, sheet_name="Статистика_сверки", index=False
                 )
 
+            # Лист: Прайс-сверка
+            if price_stats is not None and price_stats.get("loaded"):
+                price_rows = []
+                for sheet_name in ("Процедуры", "Покупки", "Комплексы"):
+                    s = price_stats.get(sheet_name, {})
+                    price_rows.append({
+                        "Лист": sheet_name,
+                        "Матчей": s.get("found", 0),
+                        "Подставлено": s.get("filled", 0),
+                        "Расхождений": s.get("mismatched", 0),
+                        "Неоднозначных": s.get("ambiguous", 0),
+                    })
+                pd.DataFrame(price_rows).to_excel(
+                    writer, sheet_name="Прайс-сверка", index=False
+                )
+            else:
+                pd.DataFrame([{"Лист": "price list not loaded"}]).to_excel(
+                    writer, sheet_name="Прайс-сверка", index=False
+                )
+
             # Лист 4: Клиенты из OCR (если Excel существует)
             if ocr_excel_path and os.path.exists(ocr_excel_path):
                 try:
@@ -591,7 +619,8 @@ def generate_pipeline_report(log, config, verification_df, ocr_excel_path):
                     pass
 
             # Лист 5: БД Привилегия — топ клиенты
-            db_path = os.path.join(script_dir, "db_privilage.xlsx")
+            db_path = getattr(config, 'DB_PRIVILAGE_PATH',
+                              os.path.join(script_dir, "db_privilage.xlsx"))
             if os.path.exists(db_path):
                 try:
                     db_df = pd.read_excel(db_path)
@@ -951,6 +980,18 @@ def main():
     log.info("╚══════════════════════════════════════════════════════╝")
     log.info(f"  Время запуска: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}")
 
+    # ── Логирование путей ──
+    log.info(f"  Input:       {cfg.INPUT_FOLDER}")
+    log.info(f"  Output:      {cfg.OUTPUT_FILE}")
+    log.info(f"  Data dir:    {getattr(cfg, 'DATA_DIR', 'N/A')}")
+    log.info(f"  Cache:       {cfg.CACHE_FOLDER}")
+    log.info(f"  DB Privilage:{getattr(cfg, 'DB_PRIVILAGE_PATH', 'N/A')}")
+    db_clients = getattr(cfg, 'DB_CLIENTS_FILE', None)
+    if db_clients:
+        log.info(f"  DB Clients:  {db_clients}")
+        if not os.path.exists(db_clients):
+            log.warning(f"  БД_Клиенты.xlsx не найден: {db_clients} (пайплайн продолжит без него)")
+
     if args.force:
         log.info("  Режим: --force (полная переобработка)")
     elif args.skip_ocr:
@@ -964,6 +1005,7 @@ def main():
     ocr_excel_path = cfg.OUTPUT_FILE
     normalized_path = None
     verification_df = None
+    price_stats = None
 
     # ── Сброс реестра и кэша при --force ──
     if args.force:
@@ -1032,7 +1074,7 @@ def main():
         check_dependencies()
         ocr_result = run_ocr_pipeline(log, cfg)
         if ocr_result:
-            ocr_excel_path = ocr_result
+            ocr_excel_path, price_stats = ocr_result
         else:
             log.error("\n  ✗ OCR пайплайн завершился с ошибкой!")
             if not args.only_ocr:
@@ -1057,7 +1099,8 @@ def main():
         )
 
         # Итоговый комбинированный отчёт
-        generate_pipeline_report(log, cfg, verification_df, ocr_excel_path)
+        generate_pipeline_report(log, cfg, verification_df, ocr_excel_path,
+                                 price_stats=price_stats)
 
     # ── Выгрузка в Google Sheets (если включено) ──
     try:
