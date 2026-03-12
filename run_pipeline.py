@@ -274,7 +274,11 @@ def run_normalization(log, config, ocr_excel_path):
     normalized_path = os.path.join(script_dir, normalized_name)
 
     t_norm = time.time()
-    result = normalize_ocr_file(ocr_excel_path, normalized_path)
+    try:
+        result = normalize_ocr_file(ocr_excel_path, normalized_path)
+    except Exception as e:
+        log.warning(f"  Нормализация не удалась (файл повреждён или нечитаем): {e}")
+        return None
     norm_time = time.time() - t_norm
 
     if result:
@@ -393,7 +397,11 @@ def run_verification(log, config, ocr_excel_path):
 
     if ocr_excel_path and os.path.exists(ocr_excel_path):
         t_match = time.time()
-        ocr_sheets = load_ocr(ocr_excel_path)
+        try:
+            ocr_sheets = load_ocr(ocr_excel_path)
+        except Exception as e:
+            log.warning(f"  Не удалось загрузить OCR-файл (повреждён или нечитаем): {e}")
+            ocr_sheets = None
         if ocr_sheets:
             verification_df = verify_clients(ocr_sheets, db_index, threshold)
         match_time = time.time() - t_match
