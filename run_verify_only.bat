@@ -40,9 +40,7 @@ echo ============================================
 if %EXITCODE% neq 0 (
     echo [ОШИБКА] Сверка завершилась с ошибкой (код %EXITCODE%).
     echo Проверьте лог выше.
-    echo.
-    pause
-    exit /b %EXITCODE%
+    goto :done
 )
 
 set "RESULT=%~dp0clients_database.xlsx"
@@ -56,5 +54,7 @@ if exist "%RESULT%" (
     echo %RESULT%
 )
 
+:done
 echo.
-pause
+echo Нажмите любую клавишу для закрытия окна...
+pause >nul
