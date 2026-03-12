@@ -1040,9 +1040,9 @@ def find_matching_client(identifiers: dict, clients: dict, threshold: float) -> 
     2. Точное совпадение телефона → 100% тот же клиент
     3. Нечёткое совпадение ФИО >= threshold → вероятно тот же клиент
     """
-    new_fio = identifiers["fio"]
-    new_phone = identifiers["phone"].replace(" ", "").replace("-", "").replace("+", "")
-    new_iin = identifiers["iin"].replace(" ", "")
+    new_fio = identifiers["fio"] or ""
+    new_phone = (identifiers["phone"] or "").replace(" ", "").replace("-", "").replace("+", "")
+    new_iin = (identifiers["iin"] or "").replace(" ", "")
 
     for client_key, client_data in clients.items():
         # Проверка 1: ИИН (если есть у обоих)
