@@ -22,10 +22,23 @@ ROOT = Path(__file__).resolve().parent.parent
 REAL_WORKBOOK = ROOT / "clients_database.xlsx"
 REAL_PRICE = ROOT / "data" / "price.xlsx"
 
-# Skip entire module if real files are missing (e.g. CI without data)
+def _workbook_readable(path):
+    """Check if an xlsx file can actually be opened (not just exists)."""
+    if not path.exists():
+        return False
+    try:
+        wb = openpyxl.load_workbook(path)
+        wb.close()
+        return True
+    except Exception:
+        return False
+
+
+# Skip entire module if real files are missing or unreadable (e.g. CI without data,
+# or workbook corrupted by interrupted write)
 pytestmark = pytest.mark.skipif(
-    not REAL_WORKBOOK.exists() or not REAL_PRICE.exists(),
-    reason="Real clients_database.xlsx or price.xlsx not found",
+    not _workbook_readable(REAL_WORKBOOK) or not REAL_PRICE.exists(),
+    reason="Real clients_database.xlsx unreadable/missing or price.xlsx not found",
 )
 
 # --- Exact names from price.xlsx (rows 2, 3, 10) ---
