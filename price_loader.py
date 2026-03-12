@@ -11,11 +11,20 @@ price_loader.py — загрузка и матчинг прайс-листа.
 load() возвращает False и логирует warning.
 """
 
+import heapq
 import logging
 import re
 from difflib import SequenceMatcher
 
 log = logging.getLogger(__name__)
+
+try:
+    import config as _cfg
+    _PRICE_MATCH_THRESHOLD = getattr(_cfg, 'PRICE_MATCH_THRESHOLD', 0.85)
+    _PRICE_AMBIGUITY_GAP = getattr(_cfg, 'PRICE_AMBIGUITY_GAP', 0.02)
+except ImportError:
+    _PRICE_MATCH_THRESHOLD = 0.85
+    _PRICE_AMBIGUITY_GAP = 0.02
 
 _CURRENCY_WORDS_RE = re.compile(r'\b(?:ТГ|Т|KZT)\b', re.UNICODE)
 _PUNCT_RE = re.compile(r'[^\w\s]', re.UNICODE)
@@ -69,6 +78,7 @@ class PriceIndex:
     def __init__(self):
         self._index: dict = {}   # normalized_name → price
         self._loaded: bool = False
+        self._fuzzy_cache: dict = {}  # normalized_query → (price, score, ambiguous)
 
     def load(self, path) -> bool:
         """
@@ -123,6 +133,7 @@ class PriceIndex:
 
             self._index = index
             self._loaded = True
+            self._fuzzy_cache = {}
             log.info(f"Прайс-лист загружен: {len(index)} позиций из {path}")
             wb.close()
             return True
@@ -160,29 +171,39 @@ class PriceIndex:
         if norm in self._index:
             return (self._index[norm], 1.0, False)
 
-        # 2. Нечёткий поиск
+        # 2. Нечёткий поиск (с кэшем)
+        if norm in self._fuzzy_cache:
+            return self._fuzzy_cache[norm]
+
         keys = list(self._index.keys())
         if not keys:
             return (None, None, False)
 
-        scores = sorted(
-            [(SequenceMatcher(None, norm, k).ratio(), k) for k in keys],
-            key=lambda x: -x[0]
+        top2 = heapq.nlargest(
+            2,
+            ((SequenceMatcher(None, norm, k).ratio(), k) for k in keys),
+            key=lambda x: x[0],
         )
-        top_score, top_key = scores[0]
+        top_score, top_key = top2[0]
 
-        if top_score < 0.85:
-            return (None, top_score, False)
+        if top_score < _PRICE_MATCH_THRESHOLD:
+            result = (None, top_score, False)
+            self._fuzzy_cache[norm] = result
+            return result
 
         # Проверка неоднозначности
-        if len(scores) >= 2:
-            second_score = scores[1][0]
-            if abs(top_score - second_score) < 0.02:
+        if len(top2) >= 2:
+            second_score = top2[1][0]
+            if abs(top_score - second_score) < _PRICE_AMBIGUITY_GAP:
                 log.warning(
                     f"Неоднозначное совпадение для '{name}': "
                     f"'{top_key}'={top_score:.3f} vs "
-                    f"'{scores[1][1]}'={second_score:.3f}"
+                    f"'{top2[1][1]}'={second_score:.3f}"
                 )
-                return (None, top_score, True)
+                result = (None, top_score, True)
+                self._fuzzy_cache[norm] = result
+                return result
 
-        return (self._index[top_key], top_score, False)
+        result = (self._index[top_key], top_score, False)
+        self._fuzzy_cache[norm] = result
+        return result

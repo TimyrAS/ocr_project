@@ -253,7 +253,13 @@ class TestIntegration:
     def test_write_to_excel_append_price_cols(self, tmp_path, monkeypatch):
         """
         Append mode: файл существует → _append_new_clients применяет прайс
-        для новых клиентов → price_stats.loaded=True, колонки добавлены.
+        для новых клиентов → price_stats.loaded=True, колонки добавлены,
+        filled/found/mismatched подсчитаны, ячейки заполнены.
+
+        Сценарии нового клиента (3 процедуры):
+          - пустая цена → filled из прайса (5000)
+          - совпадающая цена (5000) → delta=0, совпадает=True
+          - расходящаяся цена (9999) → совпадает=False
         """
         import config
         monkeypatch.setattr(config, "OUTPUT_FILE", str(tmp_path / "test.xlsx"))
@@ -281,7 +287,7 @@ class TestIntegration:
         stats1 = write_to_excel(grouped_existing, [], price_index=None)
         assert stats1["loaded"] is False  # создан без прайса
 
-        # Шаг 2: дозапись с новым клиентом + price_index
+        # Шаг 2: дозапись с новым клиентом + price_index (3 строки)
         grouped_with_new = dict(grouped_existing)
         grouped_with_new["client_b"] = {
             "name": "Новый Клиент",
@@ -292,29 +298,58 @@ class TestIntegration:
                 "filename": "new.jpg",   # новый файл → новый клиент
                 "data": {"procedures": [
                     {"date": "02.01.2025", "procedure_name": "Массаж лица",
-                     "description": "", "cost": None},   # пустая → заполнить
+                     "description": "", "cost": None},        # пустая → filled
+                    {"date": "03.01.2025", "procedure_name": "Массаж лица",
+                     "description": "", "cost": "5000"},       # совпадает
+                    {"date": "04.01.2025", "procedure_name": "Массаж лица",
+                     "description": "", "cost": "9999"},       # расходится
                 ]}
             }]
         }
         stats2 = write_to_excel(grouped_with_new, [], price_index=pi)
 
+        # --- Проверки price_stats ---
         assert stats2["loaded"] is True
-        assert stats2["Процедуры"]["filled"] >= 1   # пустая цена заполнена
+        s = stats2["Процедуры"]
+        assert s["filled"] == 1        # ровно одна пустая цена заполнена
+        assert s["found"] == 3         # прайс найден для всех трёх строк
+        assert s["mismatched"] == 1    # 9999 ≠ 5000
 
+        # --- Проверки Excel ---
         import openpyxl
         wb = openpyxl.load_workbook(str(tmp_path / "test.xlsx"))
         ws = wb["Процедуры"]
-        headers = [ws.cell(row=1, column=c).value for c in range(1, ws.max_column + 1)]
+        headers = [ws.cell(row=1, column=c).value
+                   for c in range(1, ws.max_column + 1)]
+
         assert "Стоимость_прайс" in headers
         assert "Стоимость_дельта" in headers
         assert "Стоимость_совпадает" in headers
 
-        # Строка с новым клиентом (последняя) должна иметь filled cost=5000
-        prais_idx = headers.index("Стоимость_прайс") + 1
-        cost_idx  = headers.index("Стоимость") + 1
-        last_row = ws.max_row
-        assert ws.cell(row=last_row, column=prais_idx).value == 5000
-        assert ws.cell(row=last_row, column=cost_idx).value == 5000   # заполнено
+        cost_col  = headers.index("Стоимость") + 1
+        prais_col = headers.index("Стоимость_прайс") + 1
+        delta_col = headers.index("Стоимость_дельта") + 1
+        match_col = headers.index("Стоимость_совпадает") + 1
+
+        # Строка 2: старый клиент (без прайса), строки 3-5: новый клиент
+        # Строка 3: пустая → заполнена прайсом
+        assert ws.cell(row=3, column=cost_col).value == 5000
+        assert ws.cell(row=3, column=prais_col).value == 5000
+        assert ws.cell(row=3, column=delta_col).value == 0
+        assert ws.cell(row=3, column=match_col).value is True
+
+        # Строка 4: cost=5000, совпадает
+        assert ws.cell(row=4, column=cost_col).value == 5000
+        assert ws.cell(row=4, column=prais_col).value == 5000
+        assert ws.cell(row=4, column=delta_col).value == 0
+        assert ws.cell(row=4, column=match_col).value is True
+
+        # Строка 5: cost=9999, расхождение
+        assert ws.cell(row=5, column=cost_col).value == 9999
+        assert ws.cell(row=5, column=prais_col).value == 5000
+        assert ws.cell(row=5, column=delta_col).value == 4999
+        assert ws.cell(row=5, column=match_col).value is False
+
         wb.close()
 
     def test_pipeline_report_section(self, tmp_path, monkeypatch):

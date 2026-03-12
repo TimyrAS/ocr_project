@@ -1506,16 +1506,7 @@ def _append_new_clients(grouped_clients: dict, output_path: str,
 
     # --- Настройка прайс-сверки ---
     _use_price = price_index is not None and price_index.is_loaded
-
-    def _empty_stats():
-        return {"found": 0, "filled": 0, "mismatched": 0, "ambiguous": 0}
-
-    price_stats = {
-        "loaded": _use_price,
-        "Процедуры": _empty_stats(),
-        "Покупки": _empty_stats(),
-        "Комплексы": _empty_stats(),
-    }
+    price_stats = _init_price_stats(_use_price)
 
     def _ensure_price_header(ws, col_names):
         """Добавляет недостающие колонки прайса в заголовок (строка 1).
@@ -1537,30 +1528,6 @@ def _append_new_clients(grouped_clients: dict, output_path: str,
                 existing[name] = last_col
                 result[name] = last_col
         return result
-
-    def _price_match(lookup_name, raw_cost, sheet_name):
-        """Returns (final_cost, price_col, delta_col, match_col)."""
-        p_price, _score, p_amb = price_index.match(lookup_name or "")
-        ocr_val = _to_number_or_none(raw_cost)
-        if ocr_val is None and p_price is not None and not p_amb:
-            final_cost = p_price
-            price_stats[sheet_name]["filled"] += 1
-        else:
-            final_cost = ocr_val
-        if p_price is not None and not p_amb:
-            price_stats[sheet_name]["found"] += 1
-            delta = (final_cost - p_price) if final_cost is not None else None
-            matches = (
-                delta is not None and abs(delta) <= max(0.01 * p_price, 100)
-            )
-            if not matches and delta is not None:
-                price_stats[sheet_name]["mismatched"] += 1
-            return final_cost, p_price, delta, matches
-        elif p_amb:
-            price_stats[sheet_name]["ambiguous"] += 1
-            return final_cost, None, None, None
-        else:
-            return final_cost, None, None, None
 
     if "Клиенты" not in wb.sheetnames:
         wb.close()
@@ -1709,8 +1676,9 @@ def _append_new_clients(grouped_clients: dict, output_path: str,
                             pname_a = safe_val(p, "procedure_name")
                             raw_cost_a = safe_val(p, "cost")
                             if _use_price:
-                                row_cost_a, pc_a, dc_a, mc_a = _price_match(
-                                    pname_a, raw_cost_a, "Процедуры"
+                                row_cost_a, pc_a, dc_a, mc_a = _calc_price_row(
+                                    price_index, pname_a, raw_cost_a,
+                                    "Процедуры", price_stats,
                                 )
                             else:
                                 row_cost_a, pc_a, dc_a, mc_a = (
@@ -1727,14 +1695,7 @@ def _append_new_clients(grouped_clients: dict, output_path: str,
                                 ws_proc.cell(row=r_proc, column=col_idx, value=val)
                                 style_data_cell(ws_proc.cell(row=r_proc, column=col_idx))
                             if _use_price:
-                                for _cn, _cv in [
-                                    ("Стоимость_прайс", pc_a),
-                                    ("Стоимость_дельта", dc_a),
-                                    ("Стоимость_совпадает", mc_a),
-                                ]:
-                                    _ci = _pcols_proc[_cn]
-                                    ws_proc.cell(row=r_proc, column=_ci, value=_cv)
-                                    style_data_cell(ws_proc.cell(row=r_proc, column=_ci))
+                                _write_price_cells(ws_proc, r_proc, _pcols_proc, pc_a, dc_a, mc_a)
                             r_proc += 1
 
     # Покупки
@@ -1761,8 +1722,9 @@ def _append_new_clients(grouped_clients: dict, output_path: str,
                             pname4_a = safe_val(p, "product_name")
                             raw_price4_a = safe_val(p, "price")
                             if _use_price:
-                                row_p4_a, pc4_a, dc4_a, mc4_a = _price_match(
-                                    pname4_a, raw_price4_a, "Покупки"
+                                row_p4_a, pc4_a, dc4_a, mc4_a = _calc_price_row(
+                                    price_index, pname4_a, raw_price4_a,
+                                    "Покупки", price_stats,
                                 )
                             else:
                                 row_p4_a, pc4_a, dc4_a, mc4_a = (
@@ -1779,14 +1741,7 @@ def _append_new_clients(grouped_clients: dict, output_path: str,
                                 ws_purch.cell(row=r_purch, column=col_idx, value=val)
                                 style_data_cell(ws_purch.cell(row=r_purch, column=col_idx))
                             if _use_price:
-                                for _cn, _cv in [
-                                    ("Цена_прайс", pc4_a),
-                                    ("Цена_дельта", dc4_a),
-                                    ("Цена_совпадает", mc4_a),
-                                ]:
-                                    _ci = _pcols_purch[_cn]
-                                    ws_purch.cell(row=r_purch, column=_ci, value=_cv)
-                                    style_data_cell(ws_purch.cell(row=r_purch, column=_ci))
+                                _write_price_cells(ws_purch, r_purch, _pcols_purch, pc4_a, dc4_a, mc4_a)
                             r_purch += 1
 
     # Комплексы
@@ -1815,13 +1770,12 @@ def _append_new_clients(grouped_clients: dict, output_path: str,
                 cname5_a = safe_val(d, "complex_name")
                 raw_cost5_a = safe_val(d, "complex_cost")
                 if _use_price:
-                    row_cost5_a, pc5_a, dc5_a, mc5_a = _price_match(
-                        cname5_a, raw_cost5_a, "Комплексы"
+                    row_cost5_a, pc5_a, dc5_a, mc5_a = _calc_price_row(
+                        price_index, cname5_a, raw_cost5_a,
+                        "Комплексы", price_stats,
                     )
-                    price_extra5_a = [(pc5_a, dc5_a, mc5_a)]
                 else:
                     row_cost5_a = raw_cost5_a
-                    price_extra5_a = []
                 base = [
                     cid, safe_val(d, "patient_name"), safe_val(d, "contacts"),
                     safe_val(d, "doctor"), cname5_a,
@@ -1839,14 +1793,7 @@ def _append_new_clients(grouped_clients: dict, output_path: str,
                                 ws_comp.cell(row=r_comp, column=col_idx, value=val)
                                 style_data_cell(ws_comp.cell(row=r_comp, column=col_idx))
                             if _use_price:
-                                for _cn, _cv in [
-                                    ("Стоимость_прайс", pc5_a),
-                                    ("Стоимость_дельта", dc5_a),
-                                    ("Стоимость_совпадает", mc5_a),
-                                ]:
-                                    _ci = _pcols_comp[_cn]
-                                    ws_comp.cell(row=r_comp, column=_ci, value=_cv)
-                                    style_data_cell(ws_comp.cell(row=r_comp, column=_ci))
+                                _write_price_cells(ws_comp, r_comp, _pcols_comp, pc5_a, dc5_a, mc5_a)
                             r_comp += 1
                 else:
                     row_data = base + ["", "", "", "", ""]
@@ -1854,14 +1801,7 @@ def _append_new_clients(grouped_clients: dict, output_path: str,
                         ws_comp.cell(row=r_comp, column=col_idx, value=val)
                         style_data_cell(ws_comp.cell(row=r_comp, column=col_idx))
                     if _use_price:
-                        for _cn, _cv in [
-                            ("Стоимость_прайс", pc5_a),
-                            ("Стоимость_дельта", dc5_a),
-                            ("Стоимость_совпадает", mc5_a),
-                        ]:
-                            _ci = _pcols_comp[_cn]
-                            ws_comp.cell(row=r_comp, column=_ci, value=_cv)
-                            style_data_cell(ws_comp.cell(row=r_comp, column=_ci))
+                        _write_price_cells(ws_comp, r_comp, _pcols_comp, pc5_a, dc5_a, mc5_a)
                     r_comp += 1
 
     # Ботокс
@@ -1912,18 +1852,68 @@ def _append_new_clients(grouped_clients: dict, output_path: str,
     return price_stats
 
 
-def _to_number_or_none(value) -> 'int | None':
-    """Парсит OCR-значение цены (None/int/float/str) → int или None."""
-    from price_loader import _parse_price
-    return _parse_price(value)
+from price_loader import _parse_price as _to_number_or_none
+
+
+def _init_price_stats(use_price):
+    """Создаёт начальный dict статистики прайс-сверки."""
+    def _empty():
+        return {"found": 0, "filled": 0, "mismatched": 0, "ambiguous": 0}
+    return {
+        "loaded": use_price,
+        "Процедуры": _empty(),
+        "Покупки": _empty(),
+        "Комплексы": _empty(),
+    }
+
+
+def _calc_price_row(price_index, lookup_name, raw_cost, sheet_name, price_stats):
+    """Общая логика прайс-сверки для одной строки.
+
+    Returns (final_cost, price_col, delta_col, match_col).
+    """
+    try:
+        tol_pct = config.PRICE_TOLERANCE_PCT
+        tol_abs = config.PRICE_TOLERANCE_ABS
+    except AttributeError:
+        tol_pct, tol_abs = 0.01, 100
+
+    p_price, _score, p_amb = price_index.match(lookup_name or "")
+    ocr_val = _to_number_or_none(raw_cost)
+    if ocr_val is None and p_price is not None and not p_amb:
+        final_cost = p_price
+        price_stats[sheet_name]["filled"] += 1
+    else:
+        final_cost = ocr_val
+    if p_price is not None and not p_amb:
+        price_stats[sheet_name]["found"] += 1
+        delta = (final_cost - p_price) if final_cost is not None else None
+        matches = (
+            delta is not None and abs(delta) <= max(tol_pct * p_price, tol_abs)
+        )
+        if not matches and delta is not None:
+            price_stats[sheet_name]["mismatched"] += 1
+        return final_cost, p_price, delta, matches
+    elif p_amb:
+        price_stats[sheet_name]["ambiguous"] += 1
+        return final_cost, None, None, None
+    else:
+        return final_cost, None, None, None
+
+
+def _write_price_cells(ws, row, pcols, price_val, delta_val, match_val):
+    """Записывает ячейки прайс-сверки в строку ws."""
+    for col_name, col_val in zip(
+        list(pcols.keys()), [price_val, delta_val, match_val]
+    ):
+        ci = pcols[col_name]
+        ws.cell(row=row, column=ci, value=col_val)
+        style_data_cell(ws.cell(row=row, column=ci))
 
 
 def write_to_excel(grouped_clients: dict, all_results: list,
                    price_index=None) -> dict:
     from openpyxl import Workbook
-
-    def _empty_stats():
-        return {"found": 0, "filled": 0, "mismatched": 0, "ambiguous": 0}
 
     _use_price = price_index is not None and price_index.is_loaded
 
@@ -1942,36 +1932,7 @@ def write_to_excel(grouped_clients: dict, all_results: list,
     wb = Workbook()
 
     # --- Прайс-сверка: инициализация ---
-    price_stats = {
-        "loaded": _use_price,
-        "Процедуры": _empty_stats(),
-        "Покупки": _empty_stats(),
-        "Комплексы": _empty_stats(),
-    }
-
-    def _calc_price(lookup_name, raw_cost, sheet_name):
-        """Returns (final_cost, price_col, delta_col, match_col)."""
-        p_price, _score, p_amb = price_index.match(lookup_name or "")
-        ocr_val = _to_number_or_none(raw_cost)
-        if ocr_val is None and p_price is not None and not p_amb:
-            final_cost = p_price
-            price_stats[sheet_name]["filled"] += 1
-        else:
-            final_cost = ocr_val
-        if p_price is not None and not p_amb:
-            price_stats[sheet_name]["found"] += 1
-            delta = (final_cost - p_price) if final_cost is not None else None
-            matches = (
-                delta is not None and abs(delta) <= max(0.01 * p_price, 100)
-            )
-            if not matches and delta is not None:
-                price_stats[sheet_name]["mismatched"] += 1
-            return final_cost, p_price, delta, matches
-        elif p_amb:
-            price_stats[sheet_name]["ambiguous"] += 1
-            return final_cost, None, None, None
-        else:
-            return final_cost, None, None, None
+    price_stats = _init_price_stats(_use_price)
 
     # === ЛИСТ 1: КЛИЕНТЫ ===
     ws = wb.active
@@ -2148,8 +2109,9 @@ def write_to_excel(grouped_clients: dict, all_results: list,
                             pname = safe_val(p, "procedure_name")
                             raw_cost = safe_val(p, "cost")
                             if _use_price:
-                                row_cost, pc, dc, mc = _calc_price(
-                                    pname, raw_cost, "Процедуры"
+                                row_cost, pc, dc, mc = _calc_price_row(
+                                    price_index, pname, raw_cost,
+                                    "Процедуры", price_stats,
                                 )
                                 price_extra = [pc, dc, mc]
                             else:
@@ -2196,8 +2158,9 @@ def write_to_excel(grouped_clients: dict, all_results: list,
                             pname4 = safe_val(p, "product_name")
                             raw_price4 = safe_val(p, "price")
                             if _use_price:
-                                row_price4, pc4, dc4, mc4 = _calc_price(
-                                    pname4, raw_price4, "Покупки"
+                                row_price4, pc4, dc4, mc4 = _calc_price_row(
+                                    price_index, pname4, raw_price4,
+                                    "Покупки", price_stats,
                                 )
                                 price_extra4 = [pc4, dc4, mc4]
                             else:
@@ -2246,8 +2209,9 @@ def write_to_excel(grouped_clients: dict, all_results: list,
                 cname5 = safe_val(d, "complex_name")
                 raw_cost5 = safe_val(d, "complex_cost")
                 if _use_price:
-                    row_cost5, pc5, dc5, mc5 = _calc_price(
-                        cname5, raw_cost5, "Комплексы"
+                    row_cost5, pc5, dc5, mc5 = _calc_price_row(
+                        price_index, cname5, raw_cost5,
+                        "Комплексы", price_stats,
                     )
                     price_extra5 = [pc5, dc5, mc5]
                 else:
