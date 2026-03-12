@@ -2,6 +2,13 @@
 chcp 65001 >nul 2>&1
 title OCR Pipeline
 
+call :main
+echo.
+echo Нажмите любую клавишу для закрытия окна...
+pause >nul
+exit /b
+
+:main
 echo ============================================
 echo   OCR Pipeline — Оцифровка клиентских карточек
 echo ============================================
@@ -11,23 +18,21 @@ echo.
 py -3 -V >nul 2>&1
 if %errorlevel%==0 (
     set "PYTHON=py -3"
-    goto :run
+    goto :found
 )
 
 python -V >nul 2>&1
 if %errorlevel%==0 (
     set "PYTHON=python"
-    goto :run
+    goto :found
 )
 
 echo [ОШИБКА] Python не найден.
 echo Установите Python 3 с https://www.python.org/downloads/
 echo При установке отметьте "Add Python to PATH".
-echo.
-pause
-exit /b 1
+goto :eof
 
-:run
+:found
 echo Используется: %PYTHON%
 echo.
 
@@ -40,7 +45,7 @@ echo ============================================
 if %EXITCODE% neq 0 (
     echo [ОШИБКА] Пайплайн завершился с ошибкой (код %EXITCODE%).
     echo Проверьте лог выше.
-    goto :done
+    goto :eof
 )
 
 set "RESULT=%~dp0clients_database.xlsx"
@@ -53,8 +58,4 @@ if exist "%RESULT%" (
     echo [ВНИМАНИЕ] Пайплайн завершился успешно, но файл не найден:
     echo %RESULT%
 )
-
-:done
-echo.
-echo Нажмите любую клавишу для закрытия окна...
-pause >nul
+goto :eof
