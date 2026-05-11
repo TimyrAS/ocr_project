@@ -641,6 +641,21 @@ def extract_with_claude(claude_client, image_path: str, ocr_text: str) -> dict:
         }
 
 
+_NON_RETRIABLE_CLAUDE_ERROR_MARKERS = (
+    "credit balance is too low",
+    "insufficient credits",
+    "insufficient_quota",
+    "invalid x-api-key",
+    "authentication_error",
+)
+
+
+def _is_non_retriable_claude_error(exc: Exception) -> bool:
+    """True для ошибок Claude API, которые повтором не исправить."""
+    text = str(exc).lower()
+    return any(marker in text for marker in _NON_RETRIABLE_CLAUDE_ERROR_MARKERS)
+
+
 # ============================================================
 # 3.1. КОРРЕКЦИЯ ИМЁН ВРАЧЕЙ
 #      Нечёткое сопоставление с известным списком из config.py
@@ -904,6 +919,7 @@ def process_all_images(vision_client, claude_client) -> list:
 
     # Обрабатываем ТОЛЬКО новые
     from tqdm import tqdm
+    abort_processing = False
     for idx, img_path in enumerate(tqdm(new_files, desc="Обработка", unit="фото"), 1):
         filename = os.path.basename(img_path)
         log.info(f"\n{'─'*50}")
@@ -954,6 +970,18 @@ def process_all_images(vision_client, claude_client) -> list:
                 break
 
             except Exception as e:
+                if _is_non_retriable_claude_error(e):
+                    log.error(f"  ✗ Claude API: невосстановимая ошибка: {e}")
+                    log.error("    Повтор не поможет. Проверьте API-ключ и баланс Anthropic.")
+                    errors.append(f"{filename}: {e}")
+                    results.append({
+                        "filename": filename, "filepath": img_path,
+                        "page_type": "error",
+                        "data": {"error": str(e), "non_retriable": True},
+                        "processed_at": datetime.now().isoformat()
+                    })
+                    abort_processing = True
+                    break
                 if attempt < config.MAX_RETRIES:
                     wait = 2 ** (attempt + 1)
                     log.warning(f"  ⚠ Попытка {attempt+1}/{config.MAX_RETRIES}: {e}")
@@ -967,6 +995,10 @@ def process_all_images(vision_client, claude_client) -> list:
                         "page_type": "error", "data": {"error": str(e)},
                         "processed_at": datetime.now().isoformat()
                     })
+
+        if abort_processing:
+            log.error("  Обработка остановлена из-за ошибки Claude API.")
+            break
 
     # Сохраняем реестр после обработки
     save_registry(registry)
@@ -1925,6 +1957,8 @@ def write_to_excel(grouped_clients: dict, all_results: list,
         try:
             return _append_new_clients(grouped_clients, output_path,
                                        price_index=price_index)
+        except PermissionError:
+            raise
         except Exception as e:
             log.warning(f"  ⚠ Дозапись не удалась ({e}), пересоздаю файл...")
 
@@ -2286,7 +2320,17 @@ def write_to_excel(grouped_clients: dict, all_results: list,
 
     # === СОХРАНЕНИЕ ===
     os.makedirs(os.path.dirname(config.OUTPUT_FILE) or '.', exist_ok=True)
-    wb.save(config.OUTPUT_FILE)
+    try:
+        wb.save(config.OUTPUT_FILE)
+    except PermissionError as e:
+        try:
+            wb.close()
+        except Exception:
+            pass
+        raise PermissionError(
+            f"Не удалось записать {config.OUTPUT_FILE}. "
+            "Закройте этот файл в Excel/предпросмотре и повторите запуск."
+        ) from e
 
     log.info(f"\nExcel сохранён: {config.OUTPUT_FILE}")
     log.info(f"\nСтатистика:")

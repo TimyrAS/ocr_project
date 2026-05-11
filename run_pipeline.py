@@ -218,6 +218,12 @@ def run_ocr_pipeline(log, config):
     if errors:
         log.warning(f"    ⚠ Ошибок: {errors}")
 
+    successful_results = [r for r in results if r.get("page_type") != "error"]
+    if not successful_results:
+        log.error("\n  ✗ Нет успешно распарсенных страниц. Excel не обновлён.")
+        log.error("  Исправьте ошибку OCR/Claude и повторите запуск.")
+        return None
+
     # --- ШАГ 3: Группировка ---
     log.info("\n── ШАГ 3: Группировка по клиентам ──")
     grouped = group_by_client(results)
@@ -233,7 +239,12 @@ def run_ocr_pipeline(log, config):
         price_index.load(getattr(config, "PRICE_LIST_PATH", ""))
     except ImportError:
         price_index = None
-    price_stats = write_to_excel(grouped, results, price_index=price_index)
+    try:
+        price_stats = write_to_excel(grouped, results, price_index=price_index)
+    except PermissionError as e:
+        log.error(f"\n  ✗ Не удалось записать Excel: {e}")
+        log.error("  Закройте clients_database.xlsx в Excel/предпросмотре и повторите запуск.")
+        return None
 
     log.info(f"\n  ✓ Excel сохранён: {config.OUTPUT_FILE}")
 
